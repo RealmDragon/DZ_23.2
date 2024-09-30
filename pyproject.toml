@@ -1,0 +1,24 @@
+[tool.poetry]
+name = "screencast"
+version = "0.1.0"
+description = ""
+authors = ["KateRomanova <kate.romanova@gmail.com>"]
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "^3.12"
+psycopg2-binary = "^2.9.9"
+black = "^24.4.2"
+pillow = "^10.3.0"
+ipython = "^8.25.0"
+articles = "^0.1.0"
+article = "^0.1.1"
+django = "4.2.2"
+nullable = "^0.2.0"
+redis = "^5.0.7"
+python-dotenv = "^1.0.1"
+
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
