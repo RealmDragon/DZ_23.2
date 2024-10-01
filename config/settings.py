@@ -44,6 +44,7 @@ INSTALLED_APPS = [
     'catalog',
     'blog',
     'users',
+    'django_redis',
 ]
 
 MIDDLEWARE = [
@@ -156,8 +157,11 @@ DEFAULT_FROM_EMAIL = EMAIL_HOST_USER
 CACHE_ENABLED = True
 if CACHE_ENABLED:
     CACHES = {
-        'default': {
-            'BACKEND': 'django.core.cache.backends.redis.RedisCache',
-            'LOCATION': os.getenv('LOCATION')
+        "default": {
+            "BACKEND": "django_redis.cache.RedisCache",
+            "LOCATION": "redis://127.0.0.1:6379/1",  # Адрес и порт Redis
+            "OPTIONS": {
+                "CLIENT_CLASS": "django_redis.client.DefaultClient",
+            }
         }
     }

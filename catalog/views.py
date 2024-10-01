@@ -1,109 +1,142 @@
-from django.contrib.auth.mixins import LoginRequiredMixin
-from django.core.exceptions import PermissionDenied
-from django.forms import inlineformset_factory
-from django.shortcuts import redirect
-from django.urls import reverse_lazy
-from django.views.generic import ListView, DetailView, TemplateView, CreateView, UpdateView, DeleteView
+from django.shortcuts import render, get_object_or_404
+from django.views.generic import ListView, DetailView, CreateView, UpdateView
 
 from catalog.forms import ProductForm, VersionForm, ProductModeratorForm
-from catalog.models import Product, Version, Category
-from catalog.services import get_categories_from_cache
-
-
-class ContactsView(TemplateView):
-    template_name = 'catalog/contacts.html'
-
-    def get_context_data(self, **kwargs):
-        context = super().get_context_data(**kwargs)
-        context['contacts'] = Product.objects.all()[:5]
-        return context
+from catalog.models import Product, Version
+from django.urls import reverse_lazy
+from django.forms import inlineformset_factory
+from django.contrib.auth.mixins import LoginRequiredMixin
+from django.core.exceptions import PermissionDenied
+from django.core.cache import cache
 
 
 class ProductListView(ListView):
-    model = Product
+    """
+    Контроллер перечня товаров
+    """
 
-
-class ProductDetailView(DetailView, LoginRequiredMixin):
     model = Product
 
     def get_context_data(self, **kwargs):
+        """
+        Расширяем данные информацией по актуальной версии товара
+        """
         context_data = super().get_context_data(**kwargs)
-        ProductFormset = inlineformset_factory(Product, Version, form=VersionForm, extra=1)
-        if self.request.method == 'POST':
-            context_data['formset'] = ProductFormset(self.request.POST)
-        else:
-            context_data['formset'] = ProductFormset()
+        for product in context_data["object_list"]:
+            actual_version = Version.objects.filter(
+                product=product, is_actual=True
+            ).first()
+            product.actual_version = actual_version
+
         return context_data
 
+
+def contact(request):
+    """
+    Контроллер страницы с контактами
+    """
+    if request.method == "POST":
+        name = request.POST.get("name")
+        phone = request.POST.get("phone")
+        message = request.POST.get("message")
+        print(f"You have new message from {name}({phone}): {message}")
+    return render(request, "catalog/contact.html")
+
+
+class ProductDetailView(LoginRequiredMixin, DetailView):
+    """
+    Контроллер детального отображения товара
+    """
+
+    model = Product
+
+    def get_object(self, queryset=None):
+        """
+        Только владелец может просматривать карточук товара
+        """
+        self.object = super().get_object(queryset)
+        if self.request.user == self.object.owner:
+            return self.object
+        raise PermissionDenied
+
+
+class ProductCreateView(LoginRequiredMixin, CreateView):
+    """
+    Контроллер создания товара
+    """
+
+    model = Product
+    form_class = ProductForm
+    success_url = reverse_lazy("catalog:home")
+
     def form_valid(self, form):
-        formset = self.get_context_data()['formset']
+        """
+        Автоматическая привязка пользователя к продукту
+        """
+        product = form.save()
+        user = self.request.user
+        product.owner = user
+        product.save()
+        return super().form_valid(form)
+
+
+class ProductUpdateView(LoginRequiredMixin, UpdateView):
+    """
+    Контроллер обновления товара
+    """
+
+    model = Product
+    form_class = ProductForm
+    success_url = reverse_lazy("catalog:home")
+
+    def get_context_data(self, **kwargs):
+        """
+        Добавляем формсет для ввода версии продукта
+        """
+        key = f"product_{self.object.id}"  # Ключ для кеширования
+        data = cache.get(key)  # Получение данных из кеша
+
+        if data is None:
+            # Достаем данные из базы данных, если нет в кеше
+            context_data = super().get_context_data(**kwargs)
+            SubjectFormset = inlineformset_factory(
+                Product, Version, form=VersionForm, extra=1
+            )
+            if self.request.method == "POST":
+                context_data["formset"] = SubjectFormset(
+                    self.request.POST, instance=self.object
+                )
+            else:
+                context_data["formset"] = SubjectFormset(instance=self.object)
+
+            cache.set(key, context_data, timeout=300)  # Кэшируем на 5 минут
+
+        return data  # Возвращаем данные из кеша
+
+    def form_valid(self, form):
+        """
+        Обработка сохранения формсетов
+        """
+        formset = self.get_context_data()["formset"]
         self.object = form.save()
         if formset.is_valid():
             formset.instance = self.object
             formset.save()
+
         return super().form_valid(form)
 
-
-class ProductCreateView(LoginRequiredMixin, CreateView):
-    model = Product
-    form_class = ProductForm
-    success_url = reverse_lazy('catalog:product_list')
-
-    def form_valid(self, form):
-        product = form.save(commit=False)
-        product.owner = self.request.user
-        product.save()
-        return redirect('catalog:product_detail', product.pk)
-
-
-class ProductUpdateView(LoginRequiredMixin, UpdateView):
-    model = Product
-    form_class = ProductForm
-    success_url = reverse_lazy('catalog:product_list')
-
-    def get_context_data(self, **kwargs):
-        context_data = super().get_context_data(**kwargs)
-        ProductFormset = inlineformset_factory(Product, Version, VersionForm, extra=1)
-        if self.request.method == 'POST':
-            context_data['formset'] = ProductFormset(self.request.POST, instance=self.object)
-        else:
-            context_data['formset'] = ProductFormset(instance=self.object)
-        return context_data
-
-    def form_valid(self, form):
-        context_data = self.get_context_data()
-        formset = context_data['formset']
-        if form.is_valid() and formset.is_valid():
-            self.object = form.save()
-            formset.instance = self.object
-            formset.save()
-            return super().form_valid(form)
-        else:
-            return self.render_to_response(self.get_context_data(form=form, formset=formset))
-
     def get_form_class(self):
+        """
+        Проверка, что пользователь владелец товара,
+        Проверка прав модератора на редактирование товара
+        """
         user = self.request.user
-        user.save()
         if user == self.object.owner:
             return ProductForm
-        if user.has_perm('catalog.can_edit_product_description') and user.has_perm('catalog.can_edit_product_category') and user.has_perm('catalog.can_cancel_publication'):
+        if (
+            user.has_perm("catalog.set_published_status")
+            and user.has_perm("catalog.can_edit_description")
+            and user.has_perm("catalog.can_edit_category")
+        ):
             return ProductModeratorForm
         raise PermissionDenied
-
-
-class ProductDeleteView(LoginRequiredMixin, DeleteView):
-    model = Product
-    success_url = reverse_lazy('catalog:product_list')
-
-    def get_form_class(self):
-        user = self.request.user
-        if user == self.object.owner:
-            return ProductForm
-        raise PermissionDenied
-
-
-class CategoryListView(ListView):
-    model = Category
-
-    def get_queryset(self):
-        return get_categories_from_cache()
